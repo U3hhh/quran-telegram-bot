@@ -1,0 +1,102 @@
+name: Publish Quran verse
+
+on:
+  schedule:
+    # GitHub supports an IANA timezone on scheduled workflows. These local
+    # Baghdad times are approximate prayer-time targets; avoid minute 00.
+    # To change a time later, edit the cron value and the matching QURAN_SLOT
+    # expression below. Keep the three entries only, so Actions still runs
+    # approximately three times per day.
+    - cron: "17 5 * * *"
+      timezone: "Asia/Baghdad"
+    - cron: "37 12 * * *"
+      timezone: "Asia/Baghdad"
+    - cron: "23 18 * * *"
+      timezone: "Asia/Baghdad"
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Slot label for this manual test"
+        required: true
+        default: manual
+        type: choice
+        options:
+          - manual
+          - fajr
+          - dhuhr
+          - maghrib
+
+permissions:
+  contents: write
+
+concurrency:
+  group: quran-telegram-bot
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Baghdad
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+      # A scheduled run is identified from github.event.schedule. Manual runs
+      # use the selected input, which makes testing safe and explicit.
+      QURAN_SLOT: ${{ github.event_name == 'workflow_dispatch' && inputs.slot || (github.event.schedule == '17 5 * * *' && 'fajr' || github.event.schedule == '37 12 * * *' && 'dhuhr' || github.event.schedule == '23 18 * * *' && 'maghrib' || 'manual') }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify required secrets exist
+        shell: bash
+        run: |
+          if [[ -z "${BOT_TOKEN:-}" ]]; then
+            echo "::error::The BOT_TOKEN GitHub Actions secret is missing."
+            exit 1
+          fi
+          if [[ -z "${CHANNEL_ID:-}" ]]; then
+            echo "::error::The CHANNEL_ID GitHub Actions secret is missing."
+            exit 1
+          fi
+
+      - name: Update checkout before reading state
+        shell: bash
+        run: git pull --rebase origin "${GITHUB_REF_NAME}"
+
+      - name: Publish one Quran verse
+        run: python main.py
+
+      - name: Commit and push successful state update
+        shell: bash
+        run: |
+          if git diff --quiet -- data/state.json; then
+            echo "No state change to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/state.json
+          git commit -m "chore: update Quran bot state [skip ci]"
+
+          # Concurrency protects scheduled runs from each other. These retries
+          # also handle a fast unrelated repository update without sending the
+          # Telegram message again.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} failed; rebasing on the latest branch."
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+          done
+
+          echo "::error::Could not push data/state.json after three attempts."
+          exit 1
