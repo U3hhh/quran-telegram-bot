@@ -1,5 +1,12 @@
 {
   "cycle": 1,
-  "used_ayahs": [],
-  "last_posts": {}
+  "used_ayahs": [
+    4778
+  ],
+  "last_posts": {
+    "2026-08-24-manual-221654": {
+      "ayah_id": 4778,
+      "posted_at": "2026-08-24T22:16:54+03:00"
+    }
+  }
 }
